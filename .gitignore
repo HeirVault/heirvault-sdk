@@ -1,2 +1,20 @@
+# Dependencies
 /node_modules/
-.heirvault-contracts/target/
+
+# SDK build output
+/dist/
+/coverage/
+*.tsbuildinfo
+
+# Vendored frontend (built separately)
+HeirVault-app/node_modules/
+HeirVault-app/.next/
+HeirVault-app/next-env.d.ts
+HeirVault-app/coverage/
+
+# Contracts (built separately)
+/heirvault-contracts/target/
+
+# Environment
+.env
+.env.local
