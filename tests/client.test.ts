@@ -209,4 +209,35 @@ describe("createVaultWithSetup", () => {
     expect(result.remaining).toEqual([]);
     expect(result.steps.every((step) => step.ok)).toBe(true);
   });
+
+  it("resumes setup from remaining steps without re-creating the vault", async () => {
+    const { signer } = signingSigner();
+    const fake = fakeServer({
+      simulations: [
+        successSimulation(xdr.ScVal.scvVoid()), // add_guardian succeeds
+        successSimulation(xdr.ScVal.scvVoid()), // deposit succeeds
+      ],
+      transactions: [successTx(xdr.ScVal.scvVoid()), successTx(xdr.ScVal.scvVoid())],
+    });
+    const client = new HeirVaultClient({
+      contractId: TEST_CONTRACT,
+      network: "testnet",
+      signer,
+      server: fake.server,
+      asset: { contractId: ASSET, decimals: 7 },
+    });
+
+    const result = await client.resumeSetup(7n, [
+      { type: "addGuardian", guardian: GUARDIAN },
+      { type: "deposit", amount: 500n },
+    ]);
+
+    expect(result.vaultId).toBe(7n);
+    expect(result.createHash).toBe("");
+    expect(result.completed).toBe(true);
+    expect(result.remaining).toEqual([]);
+    expect(result.steps).toHaveLength(2);
+    expect(result.steps[0]).toMatchObject({ ok: true });
+    expect(result.steps[1]).toMatchObject({ ok: true });
+  });
 });

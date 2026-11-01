@@ -270,6 +270,9 @@ if (!result.completed) {
   // result.vaultId     — the vault that *was* created (safe to reuse)
   // result.steps       — each attempted step with ok/hash/error
   // result.remaining   — the steps to retry, in order
+
+  // Safely resume remaining steps without recreating the vault:
+  const resumed = await client.resumeSetup(result.vaultId, result.remaining);
 }
 ```
 

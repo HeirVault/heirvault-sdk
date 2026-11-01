@@ -500,6 +500,48 @@ export class HeirVaultClient {
     };
   }
 
+  /**
+   * Resume an incomplete vault setup workflow without recreating the vault.
+   *
+   * Executes the provided `steps` sequentially against an existing `vaultId`.
+   * Preserves per-step transaction outcomes and aborts on the first error,
+   * returning remaining steps so callers can retry safely without duplicate
+   * deposits or operations.
+   */
+  async resumeSetup(
+    vaultId: VaultIdInput,
+    steps: VaultSetupStep[] = [],
+    options: WriteOptions = {},
+  ): Promise<VaultCreationResult> {
+    const id = parseVaultId(vaultId);
+    const results: VaultSetupStepResult[] = [];
+    let failedAt = steps.length;
+
+    for (let index = 0; index < steps.length; index += 1) {
+      const step = steps[index]!;
+      try {
+        const outcome = await this.runSetupStep(id, step, options);
+        results.push({ step, ok: true, hash: outcome.hash, ledger: outcome.ledger });
+      } catch (error) {
+        results.push({
+          step,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        failedAt = index;
+        break;
+      }
+    }
+
+    return {
+      vaultId: id,
+      createHash: "",
+      steps: results,
+      completed: failedAt === steps.length,
+      remaining: steps.slice(failedAt),
+    };
+  }
+
   private async runSetupStep(
     vaultId: VaultId,
     step: VaultSetupStep,
