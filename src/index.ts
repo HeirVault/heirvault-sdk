@@ -179,4 +179,5 @@ export type {
   Deadlines,
   CreateVaultArgs,
   CreateVaultResult,
+  ClaimableBeneficiaryAllocation,
 } from "./types.js";

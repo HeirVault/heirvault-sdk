@@ -244,3 +244,12 @@ export interface CreateVaultArgs {
 export interface CreateVaultResult {
   vaultId: VaultId;
 }
+
+/** A claimable allocation discovered for a beneficiary across vaults. */
+export interface ClaimableBeneficiaryAllocation {
+  vaultId: VaultId;
+  vault: Vault;
+  allocationBps: number;
+  claimed: boolean;
+  claimableAmount: bigint;
+}

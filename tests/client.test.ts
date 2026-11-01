@@ -1,8 +1,8 @@
-import { xdr } from "@stellar/stellar-sdk";
+import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
 
 import { HeirVaultClient } from "../src/client.js";
-import { enumToScVal, u32ToScVal, u64ToScVal } from "../src/codec.js";
+import { addressToScVal, enumToScVal, u32ToScVal, u64ToScVal } from "../src/codec.js";
 import { InvalidArgumentError, SignerNotConfiguredError } from "../src/errors.js";
 import {
   TEST_CONTRACT,
@@ -239,5 +239,54 @@ describe("createVaultWithSetup", () => {
     expect(result.steps).toHaveLength(2);
     expect(result.steps[0]).toMatchObject({ ok: true });
     expect(result.steps[1]).toMatchObject({ ok: true });
+  });
+
+  it("submits pingVault on-chain to refresh vault TTL without owner auth", async () => {
+    const { signer } = signingSigner();
+    const vaultRetval = nativeToScVal({
+      vault: {
+        id: 9n,
+        owner: OWNER,
+        asset: ASSET,
+        balance: 1000n,
+        status: ["Active"],
+        activation_mode: ["MissedCheckIn"],
+        check_in_period: 3600n,
+        grace_period: 600n,
+        last_check_in: 1000n,
+        last_status_change: 1000n,
+        activated_at: 0n,
+        distribution_balance: 0n,
+        total_claimed: 0n,
+        claimed_count: 0,
+        beneficiaries: [],
+        guardians: [],
+        guardian_threshold: 1,
+        guardian_approvals: 0,
+        created_at: 1000n,
+        schema_version: 1,
+      },
+      deadline: 4600n,
+      grace_end: 5200n,
+      effective_status: ["Active"],
+      total_allocation_bps: 10000,
+      guardian_threshold: 1,
+      guardian_approvals: 0,
+      activation_ready: false,
+    });
+    const fake = fakeServer({
+      simulations: [successSimulation(vaultRetval)],
+      transactions: [successTx(vaultRetval)],
+    });
+    const client = new HeirVaultClient({
+      contractId: TEST_CONTRACT,
+      network: "testnet",
+      signer,
+      server: fake.server,
+    });
+
+    const result = await client.pingVault(9n);
+    expect(invokedMethod(fake.simulated[0]!)).toBe("get_vault");
+    expect(result.value.id).toBe(9n);
   });
 });

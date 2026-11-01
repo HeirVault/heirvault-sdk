@@ -35,6 +35,7 @@ import {
   type Beneficiary,
   type BeneficiaryPage,
   type BeneficiaryVaultPage,
+  type ClaimableBeneficiaryAllocation,
   type ClaimPage,
   type ClaimRecord,
   type CreateVaultArgs,
@@ -262,6 +263,59 @@ export class HeirVaultClient {
     );
   }
 
+  /** Every vault id in which a beneficiary is enrolled, following the paging cursor. */
+  async getAllVaultsByBeneficiary(
+    beneficiary: StellarAddress,
+    options: ReadOptions = {},
+  ): Promise<VaultId[]> {
+    const vaultIds: VaultId[] = [];
+    let offset = 0;
+    for (let page = 0; page < 100; page += 1) {
+      const result = await this.getVaultsByBeneficiary(beneficiary, {
+        ...options,
+        offset,
+        limit: clampLimit(options.limit ?? this.defaultPageLimit),
+      });
+      vaultIds.push(...result.vaultIds);
+      if (!result.meta.hasMore || result.meta.nextOffset === null) break;
+      offset = result.meta.nextOffset;
+    }
+    return vaultIds;
+  }
+
+  /**
+   * Discovers all claimable allocations for a beneficiary across all their enrolled vaults.
+   * Useful for off-chain notifiers, beneficiary dashboards, and notification indexers.
+   */
+  async getClaimableVaultsByBeneficiary(
+    beneficiary: StellarAddress,
+    options: ReadOptions = {},
+  ): Promise<ClaimableBeneficiaryAllocation[]> {
+    const vaultIds = await this.getAllVaultsByBeneficiary(beneficiary, options);
+    const results: ClaimableBeneficiaryAllocation[] = [];
+
+    for (const vaultId of vaultIds) {
+      const isClaimable = await this.isClaimable(vaultId, options);
+      if (!isClaimable) continue;
+
+      const vault = await this.getVault(vaultId, options);
+      const beneficiaries = await this.getActiveBeneficiaries(vaultId, options);
+      const match = beneficiaries.find((b) => b.address === beneficiary);
+      if (match && !match.claimed) {
+        const claimableAmount = (vault.balance * BigInt(match.allocationBps)) / 10_000n;
+        results.push({
+          vaultId,
+          vault,
+          allocationBps: match.allocationBps,
+          claimed: match.claimed,
+          claimableAmount,
+        });
+      }
+    }
+
+    return results;
+  }
+
   /** Total number of vaults ever created. */
   async getVaultCount(options?: ReadOptions): Promise<VaultId> {
     return this.read(bindings.getVaultCount, undefined, options);
@@ -445,6 +499,17 @@ export class HeirVaultClient {
   /** Claim the calling beneficiary's allocation; returns the amount paid. */
   async claim(vaultId: VaultIdInput, beneficiary: StellarAddress, options: WriteOptions = {}): Promise<TxSuccess<TokenAmount>> {
     return this.write(bindings.claim, { vaultId: parseVaultId(vaultId), beneficiary }, options, beneficiary);
+  }
+
+  /**
+   * Keeper utility: submits an on-chain transaction that loads the vault record,
+   * refreshing its persistent storage TTL out to ~90 days (`PERSISTENT_TTL_EXTEND_TO`).
+   *
+   * Any off-chain keeper, bot, or indexer can invoke this without owner authorization,
+   * keeping dormant vaults active during multi-year check-in intervals.
+   */
+  async pingVault(vaultId: VaultIdInput, options: WriteOptions = {}): Promise<TxSuccess<Vault>> {
+    return this.write(bindings.getVault, { vaultId: parseVaultId(vaultId) }, options);
   }
 
   // -------------------------------------------------------------------------
