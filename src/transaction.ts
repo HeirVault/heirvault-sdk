@@ -173,12 +173,46 @@ export async function prepareOperation(
  *  - {@link TransactionFailedError}   — submitted but reverted on-chain;
  *  - {@link ConfirmationTimeoutError} — accepted but not confirmed in budget.
  */
+interface RawTxResult {
+  status: "SUCCESS" | "FAILED" | "NOT_FOUND";
+  ledger?: number;
+  resultXdr?: string;
+  resultMetaXdr?: string;
+}
+
+async function fetchRawTransaction(server: rpc.Server, hash: string): Promise<RawTxResult | null> {
+  const url =
+    (server as unknown as { serverURL?: { toString(): string } }).serverURL?.toString?.() ??
+    (typeof (server as unknown as { serverURL?: string }).serverURL === "string"
+      ? (server as unknown as { serverURL: string }).serverURL
+      : undefined);
+  if (!url || typeof fetch === "undefined") return null;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTransaction",
+        params: { hash },
+      }),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { result?: RawTxResult };
+    return body?.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function submitOperation<T>(params: SubmitOperationParams<T>): Promise<TxSuccess<T>> {
   const emit = params.onPhase ?? (() => {});
 
   emit("building");
   emit("simulating");
-  const { prepared } = await prepareOperation(params);
+  const { prepared, simulation } = await prepareOperation(params);
 
   emit("awaiting-signature");
   const signOptions: SignOptions = {
@@ -214,25 +248,56 @@ export async function submitOperation<T>(params: SubmitOperationParams<T>): Prom
   const interval = params.pollIntervalMs ?? 1_000;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const response = await params.server.getTransaction(hash);
-
-    if (response.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-      const returnValue = response.returnValue;
-      const native = returnValue === undefined ? undefined : scValToNative(returnValue);
-      const value = params.decode(native);
-      emit("success");
-      return {
-        status: "success",
-        hash,
-        ledger: response.ledger,
-        value,
-        rawReturnValue: returnValue,
-      };
+    let response: rpc.Api.GetTransactionResponse | null = null;
+    try {
+      response = await params.server.getTransaction(hash);
+    } catch (err: unknown) {
+      if (err instanceof Error && (err.message.includes("Bad union switch") || err.message.includes("switch: 4"))) {
+        const raw = await fetchRawTransaction(params.server, hash);
+        if (raw) {
+          if (raw.status === "SUCCESS") {
+            const rawReturnValue = "result" in simulation ? (simulation as rpc.Api.SimulateTransactionSuccessResponse).result?.retval : undefined;
+            const native = rawReturnValue === undefined ? undefined : scValToNative(rawReturnValue);
+            const value = params.decode(native);
+            emit("success");
+            return {
+              status: "success",
+              hash,
+              ledger: raw.ledger,
+              value,
+              rawReturnValue,
+            };
+          }
+          if (raw.status === "FAILED") {
+            const code = parseContractErrorCode(raw.resultXdr);
+            throw new TransactionFailedError("The transaction failed on-chain.", hash, code);
+          }
+          if (attempt < attempts - 1) await sleep(interval);
+          continue;
+        }
+      }
+      throw err;
     }
 
-    if (response.status === rpc.Api.GetTransactionStatus.FAILED) {
-      const code = parseContractErrorCode(response.resultXdr) ?? parseContractErrorCode(response);
-      throw new TransactionFailedError("The transaction failed on-chain.", hash, code);
+    if (response) {
+      if (response.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+        const returnValue = response.returnValue;
+        const native = returnValue === undefined ? undefined : scValToNative(returnValue);
+        const value = params.decode(native);
+        emit("success");
+        return {
+          status: "success",
+          hash,
+          ledger: response.ledger,
+          value,
+          rawReturnValue: returnValue,
+        };
+      }
+
+      if (response.status === rpc.Api.GetTransactionStatus.FAILED) {
+        const code = parseContractErrorCode(response.resultXdr) ?? parseContractErrorCode(response);
+        throw new TransactionFailedError("The transaction failed on-chain.", hash, code);
+      }
     }
 
     // NOT_FOUND: not yet included; keep polling.
