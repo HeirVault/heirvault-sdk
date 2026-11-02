@@ -15,7 +15,7 @@ import { HeirVaultClient } from "../dist/index.js";
 import { HeirVaultKeeper } from "../dist/index.js";
 import { KeypairSigner } from "../dist/index.js";
 
-const DEFAULT_CONTRACT = "CB4I2OSSNXQCH3DGHKGYMG5DPDOUDD55YG3SSDOK4JICVDH5B7KLEWI6";
+const DEFAULT_CONTRACT = "CCI5EVN37GRWTU6OTYEUEAZCYTSDPCS7WEPLSN35FMREKTDACPYU3BSY";
 
 function parseArgs() {
   const args = process.argv.slice(2);
