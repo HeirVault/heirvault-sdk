@@ -22,6 +22,7 @@ import {
   Account,
   BASE_FEE,
   Contract,
+  Operation,
   StrKey,
   Transaction,
   TransactionBuilder,
@@ -31,6 +32,7 @@ import {
 } from "@stellar/stellar-sdk";
 
 import {
+  ArchivedStorageError,
   ConfirmationTimeoutError,
   HeirVaultSdkError,
   SimulationError,
@@ -133,6 +135,12 @@ export async function simulateRead(params: SimulateReadParams): Promise<unknown>
     .build();
 
   const simulation = await params.server.simulateTransaction(transaction);
+  if (rpc.Api.isSimulationRestore(simulation)) {
+    throw new ArchivedStorageError(
+      "The contract or requested vault entry has expired and is archived by the network. It must be restored using restoreFootprint before reading.",
+      simulation.restorePreamble,
+    );
+  }
   if (rpc.Api.isSimulationError(simulation)) {
     throw new SimulationError(simulation.error, parseContractErrorCode(simulation.error));
   }
@@ -157,6 +165,12 @@ export async function prepareOperation(
     .build();
 
   const simulation = await params.server.simulateTransaction(transaction);
+  if (rpc.Api.isSimulationRestore(simulation)) {
+    throw new ArchivedStorageError(
+      "The contract or requested vault entry has expired and is archived by the network. It must be restored using restoreFootprint before reading.",
+      simulation.restorePreamble,
+    );
+  }
   if (rpc.Api.isSimulationError(simulation)) {
     throw new SimulationError(simulation.error, parseContractErrorCode(simulation.error));
   }
@@ -380,4 +394,134 @@ export async function trySubmitOperation<T>(params: SubmitOperationParams<T>): P
 export async function getAccountSequence(server: rpc.Server, address: string): Promise<string> {
   const account: Account = await server.getAccount(address);
   return account.sequenceNumber();
+}
+
+export interface RestoreFootprintParams {
+  server: rpc.Server;
+  networkPassphrase: string;
+  sourceAddress: string;
+  signer: WalletSigner;
+  restorePreamble: {
+    minResourceFee: string;
+    transactionData: xdr.SorobanTransactionData | string | { build: () => xdr.SorobanTransactionData };
+  };
+  timeoutSeconds?: number;
+  fee?: string;
+  pollAttempts?: number;
+  pollIntervalMs?: number;
+  onPhase?: (phase: TransactionPhase) => void;
+}
+
+/**
+ * Submit a `restoreFootprint` transaction to revive archived Soroban persistent storage entries.
+ */
+export async function submitRestoreFootprint(params: RestoreFootprintParams): Promise<TxSuccess<void>> {
+  const emit = params.onPhase ?? (() => {});
+  emit("building");
+
+  const source = await params.server.getAccount(params.sourceAddress);
+  const rawTx = new TransactionBuilder(source, {
+    fee: params.fee ?? BASE_FEE,
+    networkPassphrase: params.networkPassphrase,
+  })
+    .addOperation(Operation.restoreFootprint({}))
+    .setTimeout(params.timeoutSeconds ?? 60)
+    .build();
+
+  emit("simulating");
+  const classicFeeNum = parseInt(rawTx.fee, 10) || 0;
+  const minResourceFeeNum = parseInt(params.restorePreamble.minResourceFee, 10) || 0;
+  const rawData = params.restorePreamble.transactionData;
+  const sorobanData: string | xdr.SorobanTransactionData =
+    typeof rawData === "string"
+      ? rawData
+      : "build" in rawData && typeof (rawData as any).build === "function"
+        ? (rawData as any).build()
+        : (rawData as xdr.SorobanTransactionData);
+
+  const prepared = TransactionBuilder.cloneFrom(rawTx, {
+    fee: (classicFeeNum + minResourceFeeNum).toString(),
+    sorobanData,
+    networkPassphrase: params.networkPassphrase,
+  }).build();
+
+  emit("awaiting-signature");
+  const signOptions: SignOptions = {
+    address: params.sourceAddress,
+    networkPassphrase: params.networkPassphrase,
+  };
+  let signedXdr: string;
+  try {
+    signedXdr = await params.signer.signTransaction(prepared.toXDR(), signOptions);
+  } catch (error) {
+    if (error instanceof WalletRejectedError) throw error;
+    throw new WalletRejectedError(
+      error instanceof Error ? error.message : "The wallet declined the restoration signature request.",
+    );
+  }
+
+  const signed = TransactionBuilder.fromXDR(signedXdr, params.networkPassphrase) as Transaction;
+
+  emit("submitted");
+  const sendResponse = await params.server.sendTransaction(signed);
+  if (sendResponse.status === "ERROR") {
+    throw new TransactionFailedError(
+      `The network rejected the restoration transaction: ${JSON.stringify(sendResponse.errorResult ?? sendResponse.status)}`,
+      sendResponse.hash,
+    );
+  }
+
+  const hash = sendResponse.hash;
+  emit("confirming");
+
+  const attempts = params.pollAttempts ?? 30;
+  const interval = params.pollIntervalMs ?? 1_000;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let response: rpc.Api.GetTransactionResponse | null = null;
+    try {
+      response = await params.server.getTransaction(hash);
+    } catch (err: unknown) {
+      if (err instanceof Error && (err.message.includes("Bad union switch") || err.message.includes("switch: 4"))) {
+        const raw = await fetchRawTransaction(params.server, hash);
+        if (raw) {
+          if (raw.status === "SUCCESS") {
+            emit("success");
+            return {
+              status: "success",
+              hash,
+              ledger: raw.ledger,
+              value: undefined,
+            };
+          }
+          if (raw.status === "FAILED") {
+            throw new TransactionFailedError("The restoration transaction failed on-chain.", hash);
+          }
+          if (attempt < attempts - 1) await sleep(interval);
+          continue;
+        }
+      }
+      throw err;
+    }
+
+    if (response) {
+      if (response.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+        emit("success");
+        return {
+          status: "success",
+          hash,
+          ledger: response.ledger,
+          value: undefined,
+        };
+      }
+      if (response.status === rpc.Api.GetTransactionStatus.FAILED) {
+        throw new TransactionFailedError("The restoration transaction failed on-chain.", hash);
+      }
+    }
+
+    if (attempt < attempts - 1) await sleep(interval);
+  }
+
+  emit("pending");
+  throw new ConfirmationTimeoutError(hash);
 }

@@ -14,7 +14,7 @@
  * a deposit or re-adding a beneficiary.
  */
 
-import { rpc } from "@stellar/stellar-sdk";
+import { Account, BASE_FEE, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
 import type { xdr } from "@stellar/stellar-sdk";
 
 import { bindings, type HeirVaultMethod } from "./bindings.js";
@@ -24,8 +24,10 @@ import { resolveNetwork, type NetworkConfig, type NetworkConfigInput } from "./n
 import type { WalletSigner } from "./signer.js";
 import {
   READ_ONLY_SOURCE,
+  buildInvocation,
   simulateRead,
   submitInvocation,
+  submitRestoreFootprint,
   type TransactionPhase,
   type TxSuccess,
 } from "./transaction.js";
@@ -510,6 +512,65 @@ export class HeirVaultClient {
    */
   async pingVault(vaultId: VaultIdInput, options: WriteOptions = {}): Promise<TxSuccess<Vault>> {
     return this.write(bindings.getVault, { vaultId: parseVaultId(vaultId) }, options);
+  }
+
+  /**
+   * Check whether a vault's persistent storage entries have expired and been archived.
+   *
+   * Simulates an invocation on `get_vault`. If the response contains a `restorePreamble`,
+   * returns `{ isArchived: true, minResourceFee: ... }`.
+   */
+  async checkArchivalStatus(vaultId: VaultIdInput): Promise<{
+    isArchived: boolean;
+    minResourceFee?: string;
+    restorePreamble?: any;
+  }> {
+    const id = parseVaultId(vaultId);
+    const source = new Account(this.readSource, "0");
+    const transaction = new TransactionBuilder(source, {
+      fee: BASE_FEE,
+      networkPassphrase: this.network.passphrase,
+    })
+      .addOperation(buildInvocation(this.contractId, bindings.getVault.method, bindings.getVault.encode({ vaultId: id })))
+      .setTimeout(30)
+      .build();
+
+    const sim = await this.server.simulateTransaction(transaction);
+    if (rpc.Api.isSimulationRestore(sim)) {
+      return {
+        isArchived: true,
+        minResourceFee: sim.restorePreamble.minResourceFee,
+        restorePreamble: sim.restorePreamble,
+      };
+    }
+    return { isArchived: false };
+  }
+
+  /**
+   * Restore archived persistent storage entries for a vault.
+   *
+   * Must be called when a vault has been dormant for >90 days and archived by the network.
+   */
+  async restoreVaultStorage(vaultId: VaultIdInput, options: WriteOptions = {}): Promise<TxSuccess<void>> {
+    const status = await this.checkArchivalStatus(vaultId);
+    if (!status.isArchived || !status.restorePreamble) {
+      throw new InvalidArgumentError(`Vault ${vaultId.toString()} is not archived; no restoration needed.`);
+    }
+
+    const signer = this.requireSigner();
+    const sourceAddress = options.sourceAddress ?? (await signer.getAddress());
+
+    return submitRestoreFootprint({
+      server: this.server,
+      networkPassphrase: this.network.passphrase,
+      sourceAddress,
+      signer,
+      restorePreamble: status.restorePreamble,
+      timeoutSeconds: options.timeoutSeconds,
+      pollAttempts: options.pollAttempts,
+      pollIntervalMs: options.pollIntervalMs,
+      onPhase: options.onPhase,
+    });
   }
 
   // -------------------------------------------------------------------------

@@ -28,7 +28,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "verify": "npm run typecheck && npm run test && npm run build"
+    "verify": "npm run typecheck && npm run test && npm run build",
+    "keeper": "node scripts/run_keeper.mjs"
   },
   "keywords": [
     "stellar",

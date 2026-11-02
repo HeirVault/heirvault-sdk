@@ -45,6 +45,7 @@ export type { HeirVaultMethod, BindingKind, MethodBinding } from "./bindings.js"
 export {
   submitInvocation,
   submitOperation,
+  submitRestoreFootprint,
   trySubmitInvocation,
   trySubmitOperation,
   prepareInvocation,
@@ -61,14 +62,16 @@ export type {
   SubmitOperationParams,
   SimulateReadParams,
   InvocationOutcome,
+  RestoreFootprintParams,
 } from "./transaction.js";
 
 // Signers
-export { FreighterSigner, callbackSigner } from "./signer.js";
+export { FreighterSigner, callbackSigner, KeypairSigner } from "./signer.js";
 export type { WalletSigner, SignOptions, FreighterApi } from "./signer.js";
 
 // Errors
 export {
+  ArchivedStorageError,
   HeirVaultSdkError,
   HeirVaultContractError,
   ContractNotConfiguredError,
@@ -181,3 +184,14 @@ export type {
   CreateVaultResult,
   ClaimableBeneficiaryAllocation,
 } from "./types.js";
+
+// Keeper
+export { HeirVaultKeeper } from "./keeper.js";
+export type {
+  KeeperConfig,
+  KeeperLogger,
+  KeeperAlert,
+  VaultHealth,
+  PingResult,
+  MaintenanceReport,
+} from "./keeper.js";

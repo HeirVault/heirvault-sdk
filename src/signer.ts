@@ -11,6 +11,7 @@
  * can equally wrap its own wallet adapter in the `WalletSigner` interface.
  */
 
+import { Keypair, TransactionBuilder } from "@stellar/stellar-sdk";
 import { SignerNotConfiguredError, WalletRejectedError } from "./errors.js";
 
 export interface SignOptions {
@@ -129,4 +130,26 @@ export function callbackSigner(
     },
     signTransaction: (envelopeXdr, options) => sign(envelopeXdr, options),
   };
+}
+
+/**
+ * A {@link WalletSigner} backed by a local Stellar {@link Keypair}.
+ * Ideal for backend services, keeper bots, and automated test runners.
+ */
+export class KeypairSigner implements WalletSigner {
+  constructor(private readonly keypair: Keypair) {}
+
+  static fromSecret(secretKey: string): KeypairSigner {
+    return new KeypairSigner(Keypair.fromSecret(secretKey));
+  }
+
+  async getAddress(): Promise<string> {
+    return this.keypair.publicKey();
+  }
+
+  async signTransaction(envelopeXdr: string, options: SignOptions): Promise<string> {
+    const tx = TransactionBuilder.fromXDR(envelopeXdr, options.networkPassphrase);
+    tx.sign(this.keypair);
+    return tx.toXDR();
+  }
 }

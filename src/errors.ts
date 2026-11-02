@@ -229,3 +229,20 @@ export function toHeirVaultError(error: unknown, fallbackMessage = "The operatio
 
   return new HeirVaultSdkError(error instanceof Error ? error.message : String(error) || fallbackMessage);
 }
+
+/**
+ * Raised when an on-chain ledger entry has been archived due to TTL expiration.
+ * In Soroban, an archived entry requires a `restoreFootprint` transaction before
+ * it can be read or modified.
+ */
+export class ArchivedStorageError extends HeirVaultSdkError {
+  readonly restorePreamble?: unknown;
+
+  constructor(
+    message = "One or more ledger entries required by this vault have expired and been archived by the network.",
+    restorePreamble?: unknown,
+  ) {
+    super(message);
+    this.restorePreamble = restorePreamble;
+  }
+}
